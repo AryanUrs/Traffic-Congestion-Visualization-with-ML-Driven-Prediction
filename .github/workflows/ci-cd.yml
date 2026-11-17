@@ -99,6 +99,7 @@ jobs:
             --exclude='__pycache__' \
             --exclude='*.pyc' \
             --exclude='.venv' \
+            --exclude='./dist' \
             --exclude='Unity-Sem7/Library' \
             --exclude='Unity-Sem7/Temp' \
             --exclude='Unity-Sem7/Obj' \
