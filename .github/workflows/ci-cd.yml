@@ -1,0 +1,112 @@
+name: CI/CD
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    name: Test and validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt pytest
+
+      - name: Run tests
+        env:
+          PYTHONPATH: .
+        run: python -m pytest -q
+
+      - name: Check Python syntax
+        run: python -m py_compile app.py flyover_model.py train_model.py
+
+      - name: Train models and generate artifacts
+        run: python train_model.py
+
+      - name: Exercise Flask API
+        env:
+          PYTHONPATH: .
+        run: |
+          python - <<'PY'
+          from app import app
+
+          client = app.test_client()
+          prediction = client.post(
+              "/predict",
+              json={
+                  "road": "Silk Board Junction",
+                  "day_num": 4,
+                  "hour": 8,
+                  "flyover": True,
+                  "model": "gbm",
+              },
+          )
+          assert prediction.status_code == 200
+          payload = prediction.get_json()
+          assert payload["bikes_before"] == payload["motorcycles"] + payload["bikes_diverted"]
+          assert 0 <= payload["diversion_rate"] <= 1
+
+          verdict = client.get(
+              "/flyover-verdict?road=Silk%20Board%20Junction&model=gbm&day_num=4"
+          )
+          assert verdict.status_code == 200
+          assert len(verdict.get_json()["ranking"]) == 22
+
+          sensitivity = client.get(
+              "/flyover-sensitivity?road=Silk%20Board%20Junction&model=gbm&day_num=4&runs=50"
+          )
+          assert sensitivity.status_code == 200
+          assert sensitivity.get_json()["runs"] == 50
+          PY
+
+  cd:
+    name: Package validated application
+    needs: ci
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Create delivery package
+        run: |
+          mkdir -p dist
+          tar \
+            --exclude=.git \
+            --exclude=.github \
+            --exclude='__pycache__' \
+            --exclude='*.pyc' \
+            --exclude='.venv' \
+            --exclude='Unity-Sem7/Library' \
+            --exclude='Unity-Sem7/Temp' \
+            --exclude='Unity-Sem7/Obj' \
+            -czf dist/traffic-congestion-visualization.tar.gz .
+
+      - name: Upload delivery artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: traffic-congestion-visualization-${{ github.sha }}
+          path: dist/traffic-congestion-visualization.tar.gz
+          retention-days: 14
